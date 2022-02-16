@@ -1,6 +1,6 @@
 
 
-from flask import Flask, render_template,request,jsonify,make_response
+from flask import Flask, render_template,request,jsonify,make_response,session
 from apscheduler.schedulers.background import BackgroundScheduler
 import datetime
 import requests,json
@@ -8,11 +8,13 @@ from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.sql import func
 from flask_cors import CORS
 from mpesa import *
+from functools import wraps
 
 app = Flask(__name__)
 alvapi_key = "4198SX701V7XO9UP"
 scheduler = BackgroundScheduler(daemon=True)
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///test.db'
+app.config["SECRET_KEY"] = "#deno0707@mwangi"
 db = SQLAlchemy(app)
 cors = CORS(app, resources={r"*": {"origins": "*"}})
 
@@ -33,20 +35,35 @@ class STKData(db.Model):
     merchant_request_id = db.Column(db.String(80), nullable=False)
     checkout_request_id = db.Column(db.String(80), nullable=False)
     response_code = db.Column(db.String(80), nullable=False)
+    result_code=db.Column(db.String(80), nullable=True)
     response_description = db.Column(db.String(80), nullable=False)
-    customer_message = db.Column(db.String(80), nullable=False)
+    customer_message = db.Column(db.String(80), nullable=True)
     created_date = db.Column(db.DateTime, nullable=False, server_default=func.now())
+    
 
 @app.before_first_request
-def create_db():
+def create_db():   
+    db.drop_all()
     db.create_all()
 
+
+
+def login_required(f):
+    @wraps(f)
+    def wrap(*args, **kwargs):
+        if 'logged_in' in session:
+            return f(*args,**kwargs)
+        else:
+            
+            return "NOT YET SUBSCRIBED"
+    return wrap
 
 @app.route("/")
 def index():
    return "This is a private API"
 
 @app.route("/json/forex")
+@login_required
 def forex_api():
     #Get from DB
     data_json=Forex.query.all()
@@ -76,7 +93,7 @@ def stk_push():
         "PartyA": phone_number,
         "PartyB": business_short_code,
         "PhoneNumber": phone_number,
-        "CallBackURL": "https://ec96-41-80-150-214.ngrok.io/stkpush/checker",
+        "CallBackURL": "https://506c-41-80-242-58.ngrok.io/stkpush/checker",
         "AccountReference": account_number,
         "TransactionDesc": "Edwin is shouting at us"
     }
@@ -99,7 +116,15 @@ def stk_checker():
     safaricom_data = request.get_json(force=True)
     print(safaricom_data)
     print(type(safaricom_data))
-    updated=STKData.query.filter_by(checkout_request_id = safaricom_data['Body']['stkCallback']['CheckoutRequestID'], merchant_request_id = safaricom_data['Body']['stkCallback']['MerchantRequestID']).update({STKData.response_code:safaricom_data['Body']['stkCallback']['ResultCode'], STKData.response_description:safaricom_data['Body']['stkCallback']['ResultDesc']})
+    updated=STKData.query.filter_by(checkout_request_id = safaricom_data['Body']['stkCallback']['CheckoutRequestID'], merchant_request_id = safaricom_data['Body']['stkCallback']['MerchantRequestID']).update({ STKData.response_description:safaricom_data['Body']['stkCallback']['ResultDesc']})
+    corresponding_record = STKData.query.filter_by(checkout_request_id = safaricom_data['Body']['stkCallback']['CheckoutRequestID'], merchant_request_id = safaricom_data['Body']['stkCallback']['MerchantRequestID']).first()
+    corresponding_record.result_code = safaricom_data['Body']['stkCallback']['ResultCode']
+    db.session.add(corresponding_record)
+    db.session.commit()
+    corresponding_record.customer_message = safaricom_data['Body']['stkCallback']['CustomerMessage']
+    db.session.add(corresponding_record)
+    db.session.commit()
+
     db.session.commit()
 
    
@@ -114,10 +139,12 @@ def stk_push_processor():
     processorQueriedRecord = STKData.query.filter_by(checkout_request_id = apiData['checkout'], merchant_request_id = apiData['merchant']).first()
     if processorQueriedRecord:
         # resp = make_resonse(jsonify(dict({'':processorQueriedRecord.mid, '':processorQueriedRecord.cr, })),200()
-        resp =  jsonify(dict({'MerchantRequestID':processorQueriedRecord.merchant_request_id, 'ResultDesc':processorQueriedRecord.response_description, 'ResponseCode':processorQueriedRecord.response_code}))
-        print('this is resp',resp)       
+        resp =  jsonify(dict({'MerchantRequestID':processorQueriedRecord.merchant_request_id, 'ResultDesc':processorQueriedRecord.response_description, 'result_code':processorQueriedRecord.result_code}))
+        print('this is resp',processorQueriedRecord.response_code)       
         resp = make_response(resp,200)
         print(resp)
+        if processorQueriedRecord.result_code =='0':
+            session['logged_in'] = True
         return resp
        
     else:
